@@ -67,6 +67,9 @@ class DataModelColumn:
         self.config = config
         self.data_model = data_model
         self.other_table = None  # just to avoid a linting warning
+        self.choice_memberships = []
+        self.is_branch_discriminator = False
+        self.choice_group_id = None
 
     @property
     def can_join_values_as_string(self):

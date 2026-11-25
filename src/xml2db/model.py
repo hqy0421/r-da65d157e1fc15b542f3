@@ -245,6 +245,9 @@ class DataModel:
                 raise DataModelConfigError(
                     f"Table '{tb_config}' provided in config does not exist"
                 )
+        # Persist selected branch identity when XML field names are shared by choice branches.
+        for table in self.tables.values():
+            table.add_choice_branch_columns()
         # simplify the data model recursively starting from the root table
         self.types_transforms, self.fields_transforms = root_table.simplify_table()
         # remove tables that have been flagged for deletion during the simplification process
@@ -366,6 +369,15 @@ class DataModel:
         )
         self.tables[parent_type] = parent_table
 
+        node_model_group = getattr(
+            getattr(parent_node, "type", None), "model_group", None
+        )
+        if (
+            node_model_group is not None
+            and getattr(node_model_group, "model", None) == "choice"
+        ):
+            parent_table.model_group = "choice"
+
         def recurse_parse_simple_type(elem_type):
             """Parse simple types to extract properties in case of restrictions, unions, and nested forms"""
             if len(elem_type) > 1:
@@ -459,6 +471,75 @@ class DataModel:
                 ),
             ]
 
+        def get_choice_context(particle):
+            """Return choice-group and branch metadata for an XSD particle."""
+            current = particle
+            choice_group = None
+            branch_particle = None
+            while current is not None:
+                parent = getattr(current, "parent", None)
+                if (
+                    parent is not None
+                    and hasattr(parent, "model")
+                    and parent.model == "choice"
+                ):
+                    choice_group = parent
+                    branch_particle = current
+                    break
+                current = parent
+
+            if choice_group is None:
+                return None
+
+            xsd_group_id = id(choice_group)
+            if xsd_group_id not in parent_table._choice_group_xsd_ids:
+                group_id = f"choice_{len(parent_table.choice_groups) + 1}"
+                parent_table._choice_group_xsd_ids[xsd_group_id] = group_id
+                parent_table.choice_groups[group_id] = {"branches": []}
+            group_id = parent_table._choice_group_xsd_ids[xsd_group_id]
+
+            options = list(choice_group)
+            try:
+                branch_index = next(
+                    index
+                    for index, option in enumerate(options)
+                    if option is branch_particle
+                )
+            except StopIteration:
+                return None
+
+            option = options[branch_index]
+            if isinstance(option, xmlschema.XsdElement):
+                branch_name = option.local_name
+            else:
+                # For a model-group branch there is no wrapper element name.
+                # Record its first field as descriptive metadata; persistence
+                # falls back to the branch index if those labels are not unique.
+                branch_name = next(
+                    (
+                        child.local_name
+                        for child in option
+                        if isinstance(child, xmlschema.XsdElement)
+                    ),
+                    None,
+                )
+
+            required = True
+            current = particle
+            while current is not None:
+                if getattr(current, "min_occurs", 1) == 0:
+                    required = False
+                if current is branch_particle:
+                    break
+                current = getattr(current, "parent", None)
+
+            return {
+                "group_id": group_id,
+                "branch_index": branch_index,
+                "branch_name": branch_name,
+                "required": required,
+            }
+
         # go through item attributes and add them as columns, adding a suffix if an element with the same name exists
         children_names = None
         for attrib_name, attrib in parent_node.attributes.items():
@@ -493,6 +574,7 @@ class DataModel:
         # go through the children to add either arguments either relations to the current element
         for child in parent_node:
             if type(child) is xmlschema.XsdElement:
+                choice_context = get_choice_context(child)
                 # "nested_containers" is used to allow ordering nodes in mostly correct order in case of nested sequence
                 # with multiple occurrence when generating XML. For instance, if we have a sequence A, B with
                 # max occur > 1, we want to generate A, B, A, B and not A, A, B, B, thus we mark A and B as member of
@@ -546,6 +628,7 @@ class DataModel:
                         False,
                         allow_empty,
                         nested_containers[-1][1],
+                        choice_context,
                     )
 
                 elif ct.is_complex():
@@ -568,6 +651,7 @@ class DataModel:
                                 child_table,
                                 occurs,
                                 nested_containers[-1][1],
+                                choice_context,
                             )
                         else:
                             parent_table.add_relation_n(
@@ -575,6 +659,7 @@ class DataModel:
                                 child_table,
                                 occurs,
                                 nested_containers[-1][1],
+                                choice_context,
                             )
                 else:
                     raise ValueError("unknown case; please check")

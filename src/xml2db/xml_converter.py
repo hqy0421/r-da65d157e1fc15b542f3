@@ -462,7 +462,7 @@ class XMLConverter:
         prev_chain = []
         prev_ngroup = None
         ngroup_stack = []
-        for field_type, rel_name, rel in tb.fields:
+        for field_type, rel_name, rel in tb.ordered_fields_for_content(content):
             # This part manages the nodes stack, based on `name_chain` attribute which represents a "path".
             # We compare the current path with the previous field path, and manage the nodes stack accordingly
             # (i.e. create new nested nodes, pop the last node when moving to another path, etc.)

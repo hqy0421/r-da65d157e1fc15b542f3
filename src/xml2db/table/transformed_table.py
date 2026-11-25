@@ -20,6 +20,16 @@ class DataModelTableTransformed(DataModelTable):
             True if the table model be converted to type/value choice model, False otherwise
         """
         if self.model_group == "choice":
+            # A type/value transform only preserves one selected option. It is safe
+            # only when every branch is a single field; a sequence branch containing
+            # several fields must retain all of its columns.
+            has_multi_field_branch = any(
+                len(branch.get("fields", [])) > 1
+                for group in self.choice_groups.values()
+                for branch in group.get("branches", [])
+            )
+            if has_multi_field_branch:
+                return False
             col_types = list(set([col.data_type for col in self.columns.values()]))
             return (
                 len(self.relations_1) == 0
@@ -101,6 +111,8 @@ class DataModelTableTransformed(DataModelTable):
             ("col", "type", self.columns["type"]),
             ("col", "value", self.columns["value"]),
         ]
+        # The original branch fields no longer exist after type/value collapse.
+        self.choice_groups = {}
 
     def _can_transform_field(
         self, field_type: str, field_name: str, transform: str = "join"
@@ -157,9 +169,16 @@ class DataModelTableTransformed(DataModelTable):
         # "auto" at field level always runs auto-detection, overriding global transform:false
         elif field_transform == "auto" or self.data_model.model_config.get("transform", True):
             if field_type == "rel1":
+                # Branch discriminators are bookkeeping columns; they should not
+                # change whether the original relation is small enough to elevate.
+                original_column_count = sum(
+                    1
+                    for column in self.relations_1[field_name].other_table.columns.values()
+                    if not getattr(column, "is_branch_discriminator", False)
+                )
                 if (
                     self.relations_1[field_name].occurs[0] == 1
-                    or len(self.relations_1[field_name].other_table.columns) <= 4
+                    or original_column_count <= 4
                 ) and len(self.relations_1[field_name].other_table.parents_n) == 0:
                     return (
                         "elevate_wo_prefix"
@@ -183,10 +202,12 @@ class DataModelTableTransformed(DataModelTable):
 
         # insert the children fields into the current table
         elevated_fields = []
+        elevated_name_map = {}
         for child_field_type, key, child_field in rel.other_table.fields:
             prefixed_key = f"{prefix}{key}"
+            elevated_name_map[key] = prefixed_key
             if child_field_type == "col":
-                self.columns[prefixed_key] = DataModelColumn(
+                elevated_column = DataModelColumn(
                     prefixed_key,
                     [(rel.name, rel.other_table.type_name)] + child_field.name_chain,
                     child_field.data_type,
@@ -205,6 +226,21 @@ class DataModelTableTransformed(DataModelTable):
                     self.config,
                     self.data_model,
                 )
+                elevated_column.choice_memberships = [
+                    {
+                        **membership,
+                        "group_id": f"{rel.name}:{membership['group_id']}",
+                    }
+                    for membership in getattr(child_field, "choice_memberships", [])
+                ]
+                elevated_column.is_branch_discriminator = getattr(
+                    child_field, "is_branch_discriminator", False
+                )
+                if getattr(child_field, "choice_group_id", None):
+                    elevated_column.choice_group_id = (
+                        f"{rel.name}:{child_field.choice_group_id}"
+                    )
+                self.columns[prefixed_key] = elevated_column
                 elevated_fields.append(
                     (
                         "col",
@@ -213,7 +249,7 @@ class DataModelTableTransformed(DataModelTable):
                     )
                 )
             elif child_field_type == "rel1":
-                self.relations_1[prefixed_key] = DataModelRelation1(
+                elevated_rel1 = DataModelRelation1(
                     prefixed_key,
                     [(rel.name, rel.other_table.type_name)] + child_field.name_chain,
                     self,
@@ -226,6 +262,14 @@ class DataModelTableTransformed(DataModelTable):
                     child_field.ngroup,
                     self.data_model,
                 )
+                elevated_rel1.choice_memberships = [
+                    {
+                        **membership,
+                        "group_id": f"{rel.name}:{membership['group_id']}",
+                    }
+                    for membership in getattr(child_field, "choice_memberships", [])
+                ]
+                self.relations_1[prefixed_key] = elevated_rel1
                 elevated_fields.append(
                     (
                         "rel1",
@@ -234,7 +278,7 @@ class DataModelTableTransformed(DataModelTable):
                     )
                 )
             elif child_field_type == "reln":
-                self.relations_n[prefixed_key] = DataModelRelationN(
+                elevated_reln = DataModelRelationN(
                     prefixed_key,
                     [(rel.name, rel.other_table.type_name)] + child_field.name_chain,
                     self,
@@ -247,6 +291,14 @@ class DataModelTableTransformed(DataModelTable):
                     child_field.ngroup,
                     self.data_model,
                 )
+                elevated_reln.choice_memberships = [
+                    {
+                        **membership,
+                        "group_id": f"{rel.name}:{membership['group_id']}",
+                    }
+                    for membership in getattr(child_field, "choice_memberships", [])
+                ]
+                self.relations_n[prefixed_key] = elevated_reln
                 elevated_fields.append(
                     (
                         "reln",
@@ -254,6 +306,38 @@ class DataModelTableTransformed(DataModelTable):
                         self.relations_n[prefixed_key],
                     )
                 )
+        for old_group_id, child_group in getattr(
+            rel.other_table, "choice_groups", {}
+        ).items():
+            new_group_id = f"{rel.name}:{old_group_id}"
+            merged_group = {
+                **child_group,
+                "branches": [],
+                "discriminator": elevated_name_map.get(
+                    child_group.get("discriminator"),
+                    child_group.get("discriminator"),
+                ),
+            }
+            for branch in child_group.get("branches", []):
+                merged_branch = {
+                    **branch,
+                    "fields": [
+                        elevated_name_map.get(field_name, field_name)
+                        for field_name in branch.get("fields", [])
+                    ],
+                    "required": [
+                        elevated_name_map.get(field_name, field_name)
+                        for field_name in branch.get("required", [])
+                    ],
+                }
+                merged_group["branches"].append(merged_branch)
+            if "shared_fields" in merged_group:
+                merged_group["shared_fields"] = {
+                    elevated_name_map.get(field_name, field_name)
+                    for field_name in merged_group["shared_fields"]
+                }
+            self.choice_groups[new_group_id] = merged_group
+
         return elevated_fields
 
     def simplify_table(self) -> Tuple[dict, dict]:

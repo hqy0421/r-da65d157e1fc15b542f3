@@ -150,7 +150,9 @@ class Document:
             The etree object corresponding to the root XML node.
         """
         converter = XMLConverter(self.model)
-        converter.document_tree = self.flat_data_to_doc_tree()
+        converter.document_tree = self.flat_data_to_doc_tree(
+            include_choice_branch=True
+        )
         return converter.to_xml(out_file=out_file, nsmap=nsmap, indent=indent)
 
     def doc_tree_to_flat_data(
@@ -227,6 +229,18 @@ class Document:
             # build record from fields for columns and n-1 relations
             for field_type, key, field in model_table.fields:
                 if field_type == "col":
+                    if getattr(field, "is_branch_discriminator", False):
+                        branch_index = model_table.detect_choice_branch(
+                            content, field.choice_group_id
+                        )
+                        if branch_index is None:
+                            record[key] = None
+                        else:
+                            record[key] = model_table.choice_branch_value(
+                                field.choice_group_id, branch_index
+                            )
+                        continue
+
                     content_key = (
                         (f"{key[:-5]}__attr" if field.has_suffix else f"{key}__attr")
                         if field.is_attr
@@ -309,7 +323,9 @@ class Document:
 
         return flat_tables
 
-    def flat_data_to_doc_tree(self) -> tuple:
+    def flat_data_to_doc_tree(
+        self, include_choice_branch: bool = False
+    ) -> tuple:
         """Convert the data stored in flat tables into a document tree
 
         Returns:
@@ -370,7 +386,15 @@ class Document:
             content = {}
 
             record = data_index[node_type]["records"][node_pk]
+            choice_branch_indexes = {}
             for field_type, rel_name, rel in tb.fields:
+                if field_type == "col" and getattr(rel, "is_branch_discriminator", False):
+                    branch_index = tb.choice_branch_index(
+                        rel.choice_group_id, record[rel_name]
+                    )
+                    if branch_index is not None:
+                        choice_branch_indexes[rel.choice_group_id] = branch_index
+                    continue
                 if field_type == "col" and record[rel_name] is not None:
                     content_key = (
                         (
@@ -413,6 +437,10 @@ class Document:
                             rel.rel_table_name
                         ][node_pk]
                     ]
+            if include_choice_branch:
+                for group_id, branch_index in choice_branch_indexes.items():
+                    content[f"__choice_branch__{group_id}"] = [branch_index]
+
             return node_type, content
 
         return _build_node(

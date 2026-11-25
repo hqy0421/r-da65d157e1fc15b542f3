@@ -88,6 +88,8 @@ class DataModelTable:
         self.columns = {}
         self.relations_1 = {}
         self.relations_n = {}
+        self.choice_groups = {}
+        self._choice_group_xsd_ids = {}
 
         # dependencies logic
         self.is_simplified = False  # is the table already simplified ? (used in the simplification process)
@@ -136,6 +138,228 @@ class DataModelTable:
 
         return config
 
+    def _register_choice_context(self, field_name: str, field: Any, choice_context: Union[dict, None]) -> None:
+        """Record that a field belongs to an XSD choice branch."""
+        if choice_context is None:
+            return
+
+        context = dict(choice_context)
+        group_id = context["group_id"]
+        branch_index = context["branch_index"]
+        if not hasattr(field, "choice_memberships"):
+            field.choice_memberships = []
+        field.choice_memberships.append(context)
+
+        group = self.choice_groups.setdefault(group_id, {"branches": []})
+        while len(group["branches"]) <= branch_index:
+            group["branches"].append({"name": None, "fields": [], "required": []})
+
+        branch = group["branches"][branch_index]
+        if context.get("branch_name"):
+            branch["name"] = context["branch_name"]
+        if field_name not in branch["fields"]:
+            branch["fields"].append(field_name)
+        if context.get("required") and field_name not in branch["required"]:
+            branch["required"].append(field_name)
+
+    def finalize_choice_groups(self) -> None:
+        """Compute choice-group metadata used by branch-aware reconstruction."""
+        for group in self.choice_groups.values():
+            field_branches = {}
+            for branch_index, branch in enumerate(group["branches"]):
+                for field_name in branch["fields"]:
+                    field_branches.setdefault(field_name, set()).add(branch_index)
+            group["shared_fields"] = {
+                field_name
+                for field_name, branch_indexes in field_branches.items()
+                if len(branch_indexes) > 1
+            }
+            group["has_shared_field"] = bool(group["shared_fields"])
+
+    def choice_group_needs_discriminator(self, group_id: str) -> bool:
+        """Whether a persisted branch marker is useful for lossless rebuild.
+
+        Same-named fields are merged into one column. A marker is necessary when
+        merging changes a branch's field order. It is also useful when both
+        alternatives are multi-field rule branches whose shared field has
+        branch-specific meaning. The older sequence-plus-singleton pattern only
+        needs ordering metadata and remains snapshot-compatible.
+        """
+        group = self.choice_groups.get(group_id)
+        if group is None or not group.get("has_shared_field"):
+            return False
+
+        multi_field_branch_count = sum(
+            1 for branch in group.get("branches", []) if len(branch.get("fields", [])) > 1
+        )
+        if multi_field_branch_count >= 2:
+            return True
+
+        global_order = [field_name for _, field_name, _ in self.fields]
+        for branch in group.get("branches", []):
+            declared_order = branch.get("fields", [])
+            filtered_global_order = [
+                field_name
+                for field_name in global_order
+                if field_name in declared_order
+            ]
+            if filtered_global_order != declared_order:
+                return True
+        return False
+
+    def add_choice_branch_columns(self) -> None:
+        """Add persisted discriminator columns for choices that need one."""
+        self.finalize_choice_groups()
+        for group_id, group in self.choice_groups.items():
+            if group.get("discriminator") or not self.choice_group_needs_discriminator(
+                group_id
+            ):
+                continue
+
+            base_name = "choice_branch"
+            column_name = base_name
+            suffix = 2
+            while column_name in self.columns or any(
+                field_name == column_name for _, field_name, _ in self.fields
+            ):
+                column_name = f"{base_name}_{suffix}"
+                suffix += 1
+
+            self.add_column(
+                column_name,
+                "string",
+                [0, 1],
+                None,
+                None,
+                False,
+                False,
+                False,
+                True,
+                None,
+            )
+            column = self.columns[column_name]
+            column.is_branch_discriminator = True
+            column.choice_group_id = group_id
+            group["discriminator"] = column_name
+
+    def choice_field_content_key(self, field_type: str, field_name: str, field: Any) -> str:
+        """Return the document-tree content key for a table field."""
+        if field_type == "col" and getattr(field, "is_attr", False):
+            if getattr(field, "has_suffix", False):
+                return f"{field_name[:-5]}__attr"
+            return f"{field_name}__attr"
+        return field_name
+
+    def detect_choice_branch(self, content: dict, group_id: str) -> Union[int, None]:
+        """Return the choice branch represented by a document content mapping."""
+        group = self.choice_groups.get(group_id)
+        if group is None:
+            return None
+
+        fields_by_name = {
+            field_name: (field_type, field)
+            for field_type, field_name, field in self.fields
+        }
+
+        def content_key(field_name: str) -> str:
+            field_type, field = fields_by_name.get(field_name, (None, None))
+            if field is None:
+                return field_name
+            return self.choice_field_content_key(field_type, field_name, field)
+
+        candidates = []
+        for branch_index, branch in enumerate(group["branches"]):
+            required_keys = [
+                content_key(field_name)
+                for field_name in branch["required"]
+                if field_name in fields_by_name
+            ]
+            if all(key in content for key in required_keys):
+                score = sum(
+                    1
+                    for field_name in branch["fields"]
+                    if content_key(field_name) in content
+                )
+                candidates.append((score, branch_index))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    def choice_branch_value(self, group_id: str, branch_index: int) -> Union[str, None]:
+        """Return a stable, preferably readable value for a branch."""
+        group = self.choice_groups.get(group_id)
+        if group is None or branch_index >= len(group.get("branches", [])):
+            return None
+        branch = group["branches"][branch_index]
+        name = branch.get("name")
+        if name:
+            name_count = sum(
+                1 for other in group["branches"] if other.get("name") == name
+            )
+            if name_count == 1:
+                return name
+        return str(branch_index)
+
+    def choice_branch_index(self, group_id: str, value: Any) -> Union[int, None]:
+        """Resolve a persisted discriminator value to its branch index."""
+        group = self.choice_groups.get(group_id)
+        if group is None or value is None:
+            return None
+        for branch_index, branch in enumerate(group["branches"]):
+            if branch.get("name") == value or str(branch_index) == str(value):
+                return branch_index
+        return None
+
+    def ordered_fields_for_content(self, content: dict) -> list:
+        """Return fields ordered according to a selected XSD choice branch."""
+        fields = list(self.fields)
+        for group_id, group in self.choice_groups.items():
+            private_key = f"__choice_branch__{group_id}"
+            if private_key in content:
+                branch_index = int(content[private_key][0])
+            else:
+                branch_index = self.detect_choice_branch(content, group_id)
+            if branch_index is None or branch_index >= len(group["branches"]):
+                continue
+
+            branch = group["branches"][branch_index]
+            member_names = {
+                field_name
+                for other_branch in group["branches"]
+                for field_name in other_branch["fields"]
+            }
+            member_positions = [
+                index
+                for index, (_, field_name, _) in enumerate(fields)
+                if field_name in member_names
+            ]
+            if not member_positions:
+                continue
+
+            fields_by_name = {
+                field_name: field_tuple
+                for field_tuple in fields
+                for field_name in [field_tuple[1]]
+            }
+            ordered_members = [
+                fields_by_name[field_name]
+                for field_name in branch["fields"]
+                if field_name in fields_by_name
+            ]
+            ordered_names = {field_tuple[1] for field_tuple in ordered_members}
+            ordered_members += [
+                fields[position]
+                for position in member_positions
+                if fields[position][1] not in ordered_names
+            ]
+
+            for position, field_tuple in zip(member_positions, ordered_members):
+                fields[position] = field_tuple
+
+        return fields
+
     def add_column(
         self,
         name: str,
@@ -148,6 +372,7 @@ class DataModelTable:
         is_content: bool,
         allow_empty: bool,
         ngroup: Union[str, None],
+        choice_context: Union[dict, None] = None,
     ) -> None:
         """Helper to add a new column to the model
 
@@ -164,8 +389,9 @@ class DataModelTable:
             ngroup: a string id signaling that the column belongs to a nested sequence
         """
         if name in self.columns and self.columns[name].data_type == data_type:
+            self._register_choice_context(self.columns[name].name, self.columns[name], choice_context)
             return
-        self.columns[name] = DataModelColumn(
+        column = DataModelColumn(
             name,
             [(name, None)],
             data_type,
@@ -180,7 +406,9 @@ class DataModelTable:
             self.config,
             self.data_model,
         )
-        self.fields.append(("col", name, self.columns[name]))
+        self.columns[name] = column
+        self._register_choice_context(name, column, choice_context)
+        self.fields.append(("col", name, column))
 
     def add_relation_1(
         self,
@@ -188,6 +416,7 @@ class DataModelTable:
         other_table: "DataModelTable",
         occurs: List[int],
         ngroup: Union[str, None],
+        choice_context: Union[dict, None] = None,
     ) -> None:
         """Helper to add a 1-to-1 relationship
 
@@ -205,6 +434,7 @@ class DataModelTable:
             name in self.relations_1
             and self.relations_1[name].other_table.type_name == other_table.type_name
         ):
+            self._register_choice_context(name, self.relations_1[name], choice_context)
             return
         rel = DataModelRelation1(
             name,
@@ -216,10 +446,11 @@ class DataModelTable:
             self.data_model,
         )
         self.relations_1[name] = rel
+        self._register_choice_context(name, rel, choice_context)
         self.fields.append(("rel1", name, rel))
         other_table.parents_1.add(rel)
 
-    def add_relation_n(self, name, other_table, occurs, ngroup):
+    def add_relation_n(self, name, other_table, occurs, ngroup, choice_context=None):
         """Helper to add a 1-to-many relationship
 
         Args:
@@ -236,6 +467,7 @@ class DataModelTable:
             name in self.relations_n
             and self.relations_n[name].other_table.type_name == other_table.type_name
         ):
+            self._register_choice_context(name, self.relations_n[name], choice_context)
             return
         rel = DataModelRelationN(
             name,
@@ -247,6 +479,7 @@ class DataModelTable:
             self.data_model,
         )
         self.relations_n[name] = rel
+        self._register_choice_context(name, rel, choice_context)
         self.fields.append(("reln", name, rel))
         other_table.parents_n.add(rel)
 
