@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:bt="http://www.cre.fr/xml2db/base_types.xsd">
+    <xs:import schemaLocation="base_types.xsd"
+                namespace="http://www.cre.fr/xml2db/base_types.xsd" />
+    <xs:complexType name="companyIdType">
+        <xs:choice>
+            <xs:element name="ace" type="bt:stringtype"/>
+            <xs:element name="bic" type="bt:stringtype"/>
+            <xs:element name="lei" type="bt:stringtype"/>
+        </xs:choice>
+    </xs:complexType>
+
+    <xs:complexType name="ZipCodeType">
+        <xs:simpleContent>
+            <xs:extension base="bt:PostalCodeType">
+                <xs:attribute name="state" type="xs:string"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+
+    <xs:complexType name="Extra">
+        <xs:sequence>
+            <xs:any minOccurs="0" maxOccurs="unbounded" processContents="skip" />
+        </xs:sequence>
+        <xs:anyAttribute processContents="skip" />
+    </xs:complexType>
+
+    <xs:complexType name="contacttype">
+        <xs:sequence>
+            <xs:element name="name" type="bt:stringtype"/>
+            <xs:element name="address" type="bt:stringtype"/>
+            <xs:element name="city" type="bt:stringtype"/>
+            <xs:element name="zip" type="ZipCodeType"/>
+            <xs:element name="country" type="bt:stringtype"/>
+            <xs:element name="phoneNumber" type="bt:stringtype" minOccurs="0" maxOccurs="unbounded"/>
+            <xs:element name="companyId" type="companyIdType" minOccurs="0" maxOccurs="1"/>
+            <xs:element name="coordinates" type="bt:CoordinatesListType" minOccurs="0"/>
+            <xs:element name="extra" type="Extra" minOccurs="0"/>
+            <xs:element name="a_very_long_field_type_that_makes_col_name_exceeds_max_identifier_length" type="bt:stringtype" minOccurs="0"/>
+        </xs:sequence>
+        <xs:attribute name="name" type="xs:string" use="required"/>
+    </xs:complexType>
+
+    <xs:complexType name="intfeaturetype">
+        <xs:sequence>
+            <xs:element name="id" type="xs:string"/>
+            <xs:element name="value" type="bt:inttype"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="stringfeaturetype">
+        <xs:sequence>
+            <xs:element name="id" type="xs:string"/>
+            <xs:element name="value" type="bt:stringtype"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="productfeaturestype">
+        <xs:sequence maxOccurs="unbounded">
+            <xs:element minOccurs="0" maxOccurs="unbounded" name="intfeature_with_peculiarly_long_suffix_which_overflow_max_length" type="intfeaturetype"/>
+            <xs:element minOccurs="0" maxOccurs="unbounded" name="stringfeature" type="stringfeaturetype"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="producttype">
+        <xs:sequence>
+            <xs:element name="name" type="bt:stringtype"/>
+            <xs:element name="version" type="bt:stringtype"/>
+            <xs:element name="features" type="productfeaturestype" minOccurs="0"/>
+            <xs:element name="related_product" type="producttype" minOccurs="0" maxOccurs="unbounded"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <!-- deliveryType tests the case where the same element name and complex type appear
+         in two branches of a xs:choice (sequence branch and standalone branch) -->
+    <xs:complexType name="deliveryType">
+        <xs:choice>
+            <xs:sequence>
+                <xs:element name="from" type="contacttype"/>
+                <xs:element name="to" type="contacttype"/>
+            </xs:sequence>
+            <xs:element name="to" type="contacttype"/>
+        </xs:choice>
+    </xs:complexType>
+
+    <!-- catalogRefType tests the case where the same simple element appears in two branches
+         of a xs:choice (sequence branch and standalone branch) -->
+    <xs:complexType name="catalogRefType">
+        <xs:choice>
+            <xs:sequence>
+                <xs:element name="id" type="bt:stringtype"/>
+                <xs:element name="urn" type="xs:anyURI" minOccurs="0"/>
+            </xs:sequence>
+            <xs:element name="urn" type="xs:anyURI"/>
+        </xs:choice>
+    </xs:complexType>
+
+    <xs:complexType name="itemtype">
+        <xs:sequence>
+            <xs:element name="product" type="producttype" minOccurs="1" maxOccurs="1"/>
+            <xs:element name="note" type="bt:stringtype" minOccurs="0"/>
+            <xs:element name="comment" type="bt:stringtype" minOccurs="0"/>
+            <xs:element name="quantity" type="bt:quantitytype"/>
+            <xs:element name="price" type="bt:dectype"/>
+            <xs:element name="currency" type="bt:currencytype"/>
+            <xs:element name="delivery" type="deliveryType" minOccurs="0" maxOccurs="1"/>
+            <!-- 'detail' is declared twice with a different anonymous complex type, here and in
+                 shipordertype: both types share the local name 'detail' and each one needs its
+                 own table -->
+            <xs:element name="detail" minOccurs="0" maxOccurs="unbounded">
+                <xs:complexType>
+                    <xs:sequence>
+                        <xs:element name="weight" type="bt:dectype"/>
+                        <xs:element name="unit" type="bt:stringtype"/>
+                    </xs:sequence>
+                </xs:complexType>
+            </xs:element>
+            <xs:element name="catalog_ref" type="catalogRefType" minOccurs="0"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="shipordertype">
+        <xs:sequence>
+            <xs:element name="orderperson" type="contacttype" minOccurs="1" maxOccurs="1"/>
+            <xs:element name="shipto" type="contacttype" minOccurs="0" maxOccurs="1"/>
+            <xs:element name="item" maxOccurs="unbounded" type="itemtype"/>
+            <xs:element name="detail" minOccurs="0" maxOccurs="unbounded">
+                <xs:complexType>
+                    <xs:sequence>
+                        <xs:element name="reference" type="bt:stringtype"/>
+                        <xs:element name="carrier" type="bt:stringtype"/>
+                    </xs:sequence>
+                </xs:complexType>
+            </xs:element>
+            <!-- bt:companyIdType shares its local name with companyIdType declared in this schema -->
+            <xs:element name="carrierId" type="bt:companyIdType" minOccurs="0"/>
+        </xs:sequence>
+        <xs:attribute name="orderid" type="bt:stringtype" use="required" />
+        <xs:attribute name="processed_at" type="xs:dateTime" />
+    </xs:complexType>
+
+    <xs:complexType name="orderstype">
+        <xs:sequence>
+            <xs:element name="version" type="bt:versiontype" />
+            <xs:element name="shiporder" type="shipordertype" minOccurs="0" maxOccurs="unbounded" />
+        </xs:sequence>
+        <xs:attribute name="batch_id" type="bt:stringtype" />
+    </xs:complexType>
+
+    <xs:element name="orders" type="orderstype"/>
+
+</xs:schema>

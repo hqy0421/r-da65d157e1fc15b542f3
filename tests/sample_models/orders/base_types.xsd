@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:bt="http://www.cre.fr/xml2db/base_types.xsd"
+           targetNamespace="http://www.cre.fr/xml2db/base_types.xsd"
+           elementFormDefault="qualified">
+    <xs:simpleType name="stringtype">
+        <xs:restriction base="xs:string"/>
+    </xs:simpleType>
+    <xs:simpleType name="inttype">
+        <xs:restriction base="xs:integer"/>
+    </xs:simpleType>
+    <xs:simpleType name="quantitytype">
+        <xs:restriction base="xs:integer">
+            <xs:maxInclusive value="99" />
+            <xs:minInclusive value="1" />
+        </xs:restriction>
+    </xs:simpleType>
+    <xs:simpleType name="currencytype">
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="EUR" />
+            <xs:enumeration value="CHF" />
+            <xs:enumeration value="GBP" />
+            <xs:enumeration value="USD" />
+        </xs:restriction>
+    </xs:simpleType>
+    <xs:simpleType name="versiontype">
+        <xs:restriction base="xs:int">
+            <xs:enumeration value="1" />
+            <xs:enumeration value="2" />
+            <xs:enumeration value="3" />
+        </xs:restriction>
+    </xs:simpleType>
+    <xs:simpleType name="dectype">
+        <xs:restriction base="xs:decimal"/>
+    </xs:simpleType>
+    <xs:simpleType name="CoordinatesType">
+        <xs:restriction base="xs:float" />
+    </xs:simpleType>
+    <xs:simpleType name="CoordinatesListType">
+        <xs:list itemType="bt:CoordinatesType"/>
+    </xs:simpleType>
+    <xs:simpleType name="PostalCodeType-base">
+        <xs:restriction base="bt:stringtype">
+            <xs:maxLength value="10"/>
+        </xs:restriction>
+    </xs:simpleType>
+    <xs:complexType name="PostalCodeType">
+        <xs:simpleContent>
+            <xs:extension base="bt:PostalCodeType-base">
+                <xs:attribute name="codingSystem" type="xs:string" use="required"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+    <!-- companyIdType has the same local name as a different type in orders.xsd: each type
+         needs its own table. Its elements are unqualified to keep XML documents in no namespace -->
+    <xs:complexType name="companyIdType">
+        <xs:sequence>
+            <xs:element name="vat" type="bt:stringtype" form="unqualified"/>
+            <xs:element name="registry" type="bt:stringtype" form="unqualified"/>
+        </xs:sequence>
+    </xs:complexType>
+</xs:schema>

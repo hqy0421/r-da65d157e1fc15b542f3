@@ -1,0 +1,47 @@
+name: MSSQL integration tests
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-26.04
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          SA_PASSWORD: MyTestPassword1
+          ACCEPT_EULA: 'Y'
+        ports:
+          - 1433:1433
+          
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v7
+      
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v7
+        with:
+          python-version: 3.14
+          
+      - name: Install dependencies
+        run: |
+          sleep 20
+          curl -sSL -O https://packages.microsoft.com/config/ubuntu/$(grep VERSION_ID /etc/os-release | cut -d '"' -f 2)/packages-microsoft-prod.deb
+          sudo dpkg -i packages-microsoft-prod.deb
+          rm packages-microsoft-prod.deb
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 mssql-tools18
+          python -m pip install --upgrade pip
+          python -m pip install flake8 .[tests] pyodbc
+    
+      - name: Test with pytest
+        run: |
+          pytest tests -x
+        env:
+          DB_STRING: mssql+pyodbc://sa:MyTestPassword1@localhost:1433/master?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+          PATH: /opt/mssql-tools18/bin:${{ env.PATH }}

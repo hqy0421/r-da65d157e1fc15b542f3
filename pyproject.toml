@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xml2db"
+version = "0.15.1"
+authors = [
+  { name="Commission de régulation de l'énergie", email="opensource@cre.fr" },
+]
+description = "Load complex XML files into a relational database, with tables generated from the XSD schema"
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = [
+    "xml", "xsd", "xml-schema", "etl", "elt", "data-engineering", "sql", "ddl",
+    "sqlalchemy", "postgresql", "mysql", "mariadb", "sql-server", "duckdb",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: SQL",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Text Processing :: Markup :: XML",
+]
+dependencies = [
+    "sqlalchemy>1.4",
+    "xmlschema>=3.3.2",
+    "lxml>=5.1.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+docs = ["mkdocs-material>=9.5.34", "mkdocstrings-python>=1.11.1"]
+tests = ["pytest>=7.0"]
+
+[project.scripts]
+xml2db = "xml2db.cli:main"
+
+[project.urls]
+"Documentation" = "https://cre-dev.github.io/xml2db"
+"Repository" = "https://github.com/cre-dev/xml2db"
+"Issues page" = "https://github.com/cre-dev/xml2db/issues"
+
+[tool.pytest.ini_options]
+markers = [
+    "dbtest: marks tests as integration tests requiring a database backend (deselect with '-m \"not dbtest\"')",
+]
+junit_family = "xunit2"
